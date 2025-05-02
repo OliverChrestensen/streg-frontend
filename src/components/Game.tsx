@@ -64,7 +64,7 @@ export default function Game() {
   }, [playerName]);
 
   useEffect(() => {
-    const newSocket = io("http://localhost:3001");
+    const newSocket = io("https://streg-backend.onrender.com");
     socketRef.current = newSocket;
 
     newSocket.on("playerList", (players: Player[]) => {
