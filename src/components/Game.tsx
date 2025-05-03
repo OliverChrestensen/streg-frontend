@@ -16,6 +16,7 @@ interface GameState {
   currentTurn: string | null;
   currentPlayerName: string | null;
   gameStarted: boolean;
+  boardSize: number;
 }
 
 interface GameOverInfo {
@@ -36,12 +37,14 @@ interface PlayerElimination {
 export default function Game() {
   const [playerName, setPlayerName] = useState("");
   const [selectedNumber, setSelectedNumber] = useState<number | null>(null);
+  const [boardSize, setBoardSize] = useState(20);
   const [gameState, setGameState] = useState<GameState>({
     players: [],
     numbers: Array.from({ length: 20 }, (_, i) => i + 1),
     currentTurn: null,
     currentPlayerName: null,
     gameStarted: false,
+    boardSize: 20
   });
   const [error, setError] = useState<string | null>(null);
   const [gameOver, setGameOver] = useState<boolean>(false);
@@ -204,6 +207,7 @@ export default function Game() {
       currentTurn: null,
       currentPlayerName: null,
       gameStarted: false,
+      boardSize: 20
     });
     window.location.reload();
   };
@@ -280,12 +284,31 @@ export default function Game() {
               placeholder="Enter your name"
               className="w-full p-2 border-2 border-gray-800 rounded text-black font-bold bg-white mb-4"
             />
+            <div className="mb-4">
+              <label className="block text-black font-bold mb-2">Board Size</label>
+              <select
+                value={boardSize}
+                onChange={(e) => setBoardSize(Number(e.target.value))}
+                className="w-full p-2 border-2 border-gray-800 rounded text-black font-bold bg-white"
+              >
+                <option value={10}>10 numbers</option>
+                <option value={20}>20 numbers</option>
+                <option value={30}>30 numbers</option>
+                <option value={40}>40 numbers</option>
+                <option value={50}>50 numbers</option>
+                <option value={60}>60 numbers</option>
+                <option value={70}>70 numbers</option>
+                <option value={80}>80 numbers</option>
+                <option value={90}>90 numbers</option>
+                <option value={100}>100 numbers</option>
+              </select>
+            </div>
             <button
               className="bg-blue-700 text-white font-bold py-2 px-4 rounded border-2 border-gray-800 hover:bg-blue-900 w-full"
               disabled={playerName.trim().length < 2}
               onClick={() => {
                 if (playerName.trim().length >= 2) {
-                  socketRef.current?.emit("createLobby");
+                  socketRef.current?.emit("createLobby", { boardSize });
                   setLobbyStep("creating");
                 }
               }}
@@ -492,12 +515,18 @@ export default function Game() {
               <h2 className="text-2xl font-bold mb-4 text-black">
                 Select Your Number
               </h2>
-              <div className="grid grid-cols-5 gap-2">
+              <div className={`grid gap-2 ${
+                gameState.boardSize <= 20 ? 'grid-cols-5' :
+                gameState.boardSize <= 40 ? 'grid-cols-8' :
+                gameState.boardSize <= 60 ? 'grid-cols-10' :
+                gameState.boardSize <= 80 ? 'grid-cols-10' :
+                'grid-cols-10'
+              }`}>
                 {gameState.numbers.map((number) => (
                   <button
                     key={number}
                     onClick={() => handleNumberSelect(number)}
-                    className="p-4 border-2 border-gray-800 rounded hover:bg-gray-200 text-black font-bold text-lg bg-white"
+                    className="p-2 border-2 border-gray-800 rounded hover:bg-gray-200 text-black font-bold text-sm bg-white"
                   >
                     {number}
                   </button>
@@ -543,13 +572,19 @@ export default function Game() {
             </div>
           )}
           <h2 className="text-2xl font-bold mb-4 text-black">Game Board</h2>
-          <div className="grid grid-cols-5 gap-2">
+          <div className={`grid gap-2 ${
+            gameState.boardSize <= 20 ? 'grid-cols-5' :
+            gameState.boardSize <= 40 ? 'grid-cols-8' :
+            gameState.boardSize <= 60 ? 'grid-cols-10' :
+            gameState.boardSize <= 80 ? 'grid-cols-10' :
+            'grid-cols-10'
+          }`}>
             {gameState.numbers.map((number) => (
               <button
                 key={number}
                 onClick={() => handleNumberElimination(number)}
                 disabled={socketRef.current?.id !== gameState.currentTurn}
-                className={`p-4 border-2 border-gray-800 rounded text-center bg-white text-black font-bold text-lg shadow-sm transition-colors duration-150
+                className={`p-2 border-2 border-gray-800 rounded text-center bg-white text-black font-bold text-sm shadow-sm transition-colors duration-150
                   ${
                     socketRef.current?.id === gameState.currentTurn
                       ? "hover:bg-red-200 cursor-pointer"
