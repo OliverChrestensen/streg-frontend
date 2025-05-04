@@ -219,6 +219,7 @@ export default function Game() {
   }, [gameState.players, error]);
 
   const handleNumberSelect = (number: number) => {
+    if (gameOver) return; // Prevent selection after game over
     // Always check backend state for current player
     const me = gameState.players.find(p => p.name === playerName);
     if (me && me.selectedNumber === null) {
@@ -588,7 +589,8 @@ export default function Game() {
                 Start Game
               </button>
             )}
-          {gameState.players.find(p => p.name === playerName)?.selectedNumber === null ? (
+          {/* Number selection always available until game starts, or after duplicate error, or if selectedNumber is null */}
+          {(gameState.players.length === 0 && playerName) || gameState.players.find(p => p.name === playerName)?.selectedNumber === null ? (
             <>
               <h2 className="text-2xl font-bold mb-4 text-black">
                 {error?.includes("same number") ? "Choose a Different Number" : "Select Your Number"}
@@ -612,6 +614,7 @@ export default function Game() {
               </div>
             </>
           ) : (
+            // Show waiting message only if player has picked a number, there is no error, and not all players have picked
             (!error && !gameState.players.every((p) => p.selectedNumber !== null)) ? (
               <div className="text-center mt-4">
                 <h2 className="text-xl font-bold text-black">
