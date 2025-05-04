@@ -67,11 +67,22 @@ export default function Game() {
   }, [playerName]);
 
   useEffect(() => {
-    const newSocket = io("https://streg-backend.onrender.com");
+    const backendUrl = process.env.NEXT_PUBLIC_BACKEND_URL || 'https://streg-backend.onrender.com';
+    const newSocket = io(backendUrl);
     socketRef.current = newSocket;
 
     newSocket.on("playerList", (players: Player[]) => {
-      setGameState((prev) => ({ ...prev, players }));
+      console.log("Received player list:", players);
+      setGameState((prev) => {
+        const newState = { ...prev, players };
+        // Always sync local selectedNumber with backend
+        const me = players.find(p => p.name === playerName);
+        if (me && me.selectedNumber === null && selectedNumber !== null) {
+          setSelectedNumber(null);
+        }
+        console.log("Updated game state with players:", newState);
+        return newState;
+      });
     });
 
     newSocket.on(
@@ -174,13 +185,43 @@ export default function Game() {
       }
     });
 
+    newSocket.on("lobbyJoined", (data) => {
+      setGameState((prev) => ({
+        ...prev,
+        status: "waiting",
+        boardSize: data.boardSize,
+        numbers: Array.from({ length: data.boardSize }, (_, i) => i + 1),
+      }));
+      setShowStartScreen(false);
+      // Reset local selectedNumber if needed
+      setSelectedNumber(null);
+    });
+
+    newSocket.on("resetNumbers", () => {
+      setSelectedNumber(null);
+      setError("All players have chosen the same number. Pick a new number.");
+    });
+
     return () => {
       newSocket.close();
     };
   }, []);
 
+  // Automatically clear error if all players have picked unique numbers
+  useEffect(() => {
+    if (!gameState.players.length) return;
+    const allPicked = gameState.players.every(p => p.selectedNumber !== null);
+    const numbers = gameState.players.map(p => p.selectedNumber);
+    const unique = new Set(numbers);
+    if (allPicked && unique.size === numbers.length && error) {
+      setError(null);
+    }
+  }, [gameState.players, error]);
+
   const handleNumberSelect = (number: number) => {
-    if (!selectedNumber) {
+    // Always check backend state for current player
+    const me = gameState.players.find(p => p.name === playerName);
+    if (me && me.selectedNumber === null) {
       setSelectedNumber(number);
       socketRef.current?.emit("selectNumber", number);
     }
@@ -280,7 +321,11 @@ export default function Game() {
             <input
               type="text"
               value={playerName}
-              onChange={(e) => setPlayerName(e.target.value)}
+              onChange={(e) => {
+                setPlayerName(e.target.value);
+                // Clear error when user starts typing
+                if (error) setError(null);
+              }}
               placeholder="Enter your name"
               className="w-full p-2 border-2 border-gray-800 rounded text-black font-bold bg-white mb-4"
             />
@@ -303,21 +348,30 @@ export default function Game() {
                 <option value={100}>100 numbers</option>
               </select>
             </div>
+            {error && (
+              <div className="w-full mb-4 p-2 bg-red-100 text-red-700 border-2 border-red-700 rounded font-bold">
+                {error}
+              </div>
+            )}
             <button
               className="bg-blue-700 text-white font-bold py-2 px-4 rounded border-2 border-gray-800 hover:bg-blue-900 w-full"
-              disabled={playerName.trim().length < 2}
               onClick={() => {
-                if (playerName.trim().length >= 2) {
-                  socketRef.current?.emit("createLobby", { boardSize });
-                  setLobbyStep("creating");
+                if (playerName.trim().length < 2) {
+                  setError("Name must be at least 2 characters long");
+                  return;
                 }
+                socketRef.current?.emit("createLobby", { boardSize });
+                setLobbyStep("creating");
               }}
             >
               Create Lobby
             </button>
             <button
               className="mt-2 text-blue-700 underline"
-              onClick={() => setLobbyStep("menu")}
+              onClick={() => {
+                setError(null);
+                setLobbyStep("menu");
+              }}
             >
               Back
             </button>
@@ -334,43 +388,64 @@ export default function Game() {
             <input
               type="text"
               value={playerName}
-              onChange={(e) => setPlayerName(e.target.value)}
+              onChange={(e) => {
+                setPlayerName(e.target.value);
+                // Clear error when user starts typing
+                if (error) setError(null);
+              }}
               placeholder="Enter your name"
               className="w-full p-2 border-2 border-gray-800 rounded text-black font-bold bg-white mb-2"
             />
             <input
               type="text"
               value={joinCodeInput}
-              onChange={(e) => setJoinCodeInput(e.target.value)}
+              onChange={(e) => {
+                const value = e.target.value.toUpperCase();
+                setJoinCodeInput(value);
+                // Clear error when user starts typing
+                if (error) setError(null);
+              }}
               placeholder="Enter lobby code"
               className="w-full p-2 border-2 border-gray-800 rounded text-black font-bold bg-white mb-4 uppercase"
               maxLength={5}
             />
+            {error && (
+              <div className="w-full mb-4 p-2 bg-red-100 text-red-700 border-2 border-red-700 rounded font-bold">
+                {error}
+              </div>
+            )}
             <button
               className="bg-green-700 text-white font-bold py-2 px-4 rounded border-2 border-gray-800 hover:bg-green-900 w-full"
-              disabled={
-                playerName.trim().length < 2 ||
-                joinCodeInput.trim().length !== 5
-              }
               onClick={() => {
-                if (
-                  playerName.trim().length >= 2 &&
-                  joinCodeInput.trim().length === 5
-                ) {
-                  socketRef.current?.emit("joinLobby", {
-                    code: joinCodeInput.trim().toUpperCase(),
-                    playerName,
-                  });
-                  setLobbyCode(joinCodeInput.trim().toUpperCase());
-                  setShowStartScreen(false);
+                if (playerName.trim().length < 2) {
+                  setError("Name must be at least 2 characters long");
+                  return;
                 }
+                if (joinCodeInput.trim().length !== 5) {
+                  setError("Lobby code must be 5 characters");
+                  return;
+                }
+                // Validate that the code only contains letters and numbers
+                if (!/^[A-Z0-9]{5}$/.test(joinCodeInput.trim())) {
+                  setError("Lobby code must contain only letters and numbers");
+                  return;
+                }
+                setError(null);
+                setLobbyCode(joinCodeInput.trim());
+                socketRef.current?.emit("joinLobby", {
+                  code: joinCodeInput.trim(),
+                  playerName,
+                });
               }}
             >
               Join Lobby
             </button>
             <button
               className="mt-2 text-blue-700 underline"
-              onClick={() => setLobbyStep("menu")}
+              onClick={() => {
+                setError(null);
+                setLobbyStep("menu");
+              }}
             >
               Back
             </button>
@@ -480,13 +555,17 @@ export default function Game() {
                 {player.name === playerName && (
                   <span className="ml-2 text-green-700">(You)</span>
                 )}
-                {player.selectedNumber !== null && (
+                {player.selectedNumber !== null && !error && (
                   <span className="ml-2 text-green-600">✔️</span>
                 )}
               </li>
             ))}
           </ul>
-          {/* Only party leader sees Start Game button, and only if all players have selected a number */}
+          {error && (
+            <div className="mb-4 p-2 bg-red-100 text-red-700 border-2 border-red-700 rounded font-bold">
+              {error}
+            </div>
+          )}
           {gameState.players.length > 1 &&
             gameState.players[0]?.name === playerName && (
               <button
@@ -509,11 +588,10 @@ export default function Game() {
                 Start Game
               </button>
             )}
-          {/* Number selection always available until game starts */}
-          {selectedNumber === null ? (
+          {gameState.players.find(p => p.name === playerName)?.selectedNumber === null ? (
             <>
               <h2 className="text-2xl font-bold mb-4 text-black">
-                Select Your Number
+                {error?.includes("same number") ? "Choose a Different Number" : "Select Your Number"}
               </h2>
               <div className={`grid gap-2 ${
                 gameState.boardSize <= 20 ? 'grid-cols-5' :
@@ -534,14 +612,16 @@ export default function Game() {
               </div>
             </>
           ) : (
-            <div className="text-center mt-4">
-              <h2 className="text-xl font-bold text-black">
-                Waiting for other players to select their number...
-              </h2>
-              <p className="text-black font-bold">
-                Your number: {selectedNumber}
-              </p>
-            </div>
+            (!error && !gameState.players.every((p) => p.selectedNumber !== null)) ? (
+              <div className="text-center mt-4">
+                <h2 className="text-xl font-bold text-black">
+                  Waiting for other players to select their number...
+                </h2>
+                <p className="text-black font-bold">
+                  Your number: {selectedNumber}
+                </p>
+              </div>
+            ) : null
           )}
         </div>
       </div>
