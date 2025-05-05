@@ -8,6 +8,7 @@ interface Player {
   selectedNumber: number | null;
   isEliminated: boolean;
   placement: number | null;
+  id: string;
 }
 
 interface GameState {
@@ -36,7 +37,6 @@ interface PlayerElimination {
 
 export default function Game() {
   const [playerName, setPlayerName] = useState("");
-  const [selectedNumber, setSelectedNumber] = useState<number | null>(null);
   const [boardSize, setBoardSize] = useState(20);
   const [gameState, setGameState] = useState<GameState>({
     players: [],
@@ -61,6 +61,9 @@ export default function Game() {
   >("menu");
   const socketRef = useRef<Socket | null>(null);
   const playerNameRef = useRef(playerName);
+  const [mySocketId, setMySocketId] = useState<string | null>(null);
+  const errorTimeout = useRef<NodeJS.Timeout | null>(null);
+  const justPickedNumber = useRef(false);
 
   useEffect(() => {
     playerNameRef.current = playerName;
@@ -71,15 +74,15 @@ export default function Game() {
     const newSocket = io(backendUrl);
     socketRef.current = newSocket;
 
+    newSocket.on("connect", () => {
+      setMySocketId(newSocket.id ?? null);
+    });
+
     newSocket.on("playerList", (players: Player[]) => {
       console.log("Received player list:", players);
       setGameState((prev) => {
         const newState = { ...prev, players };
-        // Always sync local selectedNumber with backend
-        const me = players.find(p => p.name === playerName);
-        if (me && me.selectedNumber === null && selectedNumber !== null) {
-          setSelectedNumber(null);
-        }
+        // No need to sync local selectedNumber anymore
         console.log("Updated game state with players:", newState);
         return newState;
       });
@@ -125,40 +128,38 @@ export default function Game() {
     );
 
     newSocket.on("error", (message: string) => {
+      console.log("Received error from backend:", message);
+      if (justPickedNumber.current) return; // Ignore error if just picked a number
       setError(message);
+      if (errorTimeout.current) clearTimeout(errorTimeout.current);
+      errorTimeout.current = setTimeout(() => setError(null), 3000);
     });
 
     newSocket.on(
       "youWon",
-      (data: { placement: number; totalPlayers: number }) => {
-        setGameOver(true);
-        setGameResult("won");
-        setGameOverInfo({
-          placements: [
-            {
-              name: playerName,
-              number: selectedNumber || 0,
-              placement: data.placement,
-            },
-          ],
+      (data: { placement: number; totalPlayers: number; number: number }) => {
+        // Only show a banner, do not set gameOver
+        setEliminationInfo({
+          playerName: playerName,
+          number: data.number,
+          placement: data.placement,
+          totalPlayers: data.totalPlayers,
         });
+        setTimeout(() => setEliminationInfo(null), 3000);
       }
     );
 
     newSocket.on(
       "youLost",
-      (data: { placement: number; totalPlayers: number }) => {
-        setGameOver(true);
-        setGameResult("lost");
-        setGameOverInfo({
-          placements: [
-            {
-              name: playerName,
-              number: selectedNumber || 0,
-              placement: data.placement,
-            },
-          ],
+      (data: { placement: number; totalPlayers: number; number: number }) => {
+        // Only show a banner, do not set gameOver
+        setEliminationInfo({
+          playerName: playerName,
+          number: data.number,
+          placement: data.placement,
+          totalPlayers: data.totalPlayers,
         });
+        setTimeout(() => setEliminationInfo(null), 3000);
       }
     );
 
@@ -194,12 +195,29 @@ export default function Game() {
       }));
       setShowStartScreen(false);
       // Reset local selectedNumber if needed
-      setSelectedNumber(null);
+      // No need to sync local selectedNumber anymore
     });
 
     newSocket.on("resetNumbers", () => {
-      setSelectedNumber(null);
+      // No need to sync local selectedNumber anymore
       setError("All players have chosen the same number. Pick a new number.");
+    });
+
+    newSocket.on("lobbyReset", (data) => {
+      setGameOver(false);
+      setGameResult(null);
+      setGameOverInfo(null);
+      // No need to sync local selectedNumber anymore
+      setGameState((prev) => ({
+        ...prev,
+        players: data.players,
+        numbers: data.numbers,
+        currentTurn: null,
+        currentPlayerName: null,
+        gameStarted: false,
+        boardSize: data.boardSize,
+      }));
+      setShowStartScreen(false);
     });
 
     return () => {
@@ -207,23 +225,13 @@ export default function Game() {
     };
   }, []);
 
-  // Automatically clear error if all players have picked unique numbers
-  useEffect(() => {
-    if (!gameState.players.length) return;
-    const allPicked = gameState.players.every(p => p.selectedNumber !== null);
-    const numbers = gameState.players.map(p => p.selectedNumber);
-    const unique = new Set(numbers);
-    if (allPicked && unique.size === numbers.length && error) {
-      setError(null);
-    }
-  }, [gameState.players, error]);
-
   const handleNumberSelect = (number: number) => {
     if (gameOver) return; // Prevent selection after game over
-    // Always check backend state for current player
-    const me = gameState.players.find(p => p.name === playerName);
+    setError(null); // Clear any error when picking a new number
+    justPickedNumber.current = true;
+    setTimeout(() => { justPickedNumber.current = false; }, 500);
+    const me = gameState.players.find(p => p.id === mySocketId);
     if (me && me.selectedNumber === null) {
-      setSelectedNumber(number);
       socketRef.current?.emit("selectNumber", number);
     }
   };
@@ -238,11 +246,17 @@ export default function Game() {
   };
 
   const handlePlayAgain = () => {
+    socketRef.current?.emit("playerReadyForReplay");
+  };
+
+  const handleMainMenu = () => {
+    // Ask backend to remove this player from the lobby
+    socketRef.current?.emit("leaveLobby");
     setGameOver(false);
     setGameResult(null);
     setGameOverInfo(null);
     setPlayerName("");
-    setSelectedNumber(null);
+    // No need to sync local selectedNumber anymore
     setGameState({
       players: [],
       numbers: Array.from({ length: 20 }, (_, i) => i + 1),
@@ -251,7 +265,10 @@ export default function Game() {
       gameStarted: false,
       boardSize: 20
     });
-    window.location.reload();
+    setShowStartScreen(true);
+    setLobbyCode(null);
+    setJoinCodeInput("");
+    setLobbyStep("menu");
   };
 
   const getPlacementText = (placement: number) => {
@@ -490,8 +507,7 @@ export default function Game() {
                   </h3>
                   {gameOverInfo.placements.map((p, index) => (
                     <p key={index} className="mb-1 text-black font-bold">
-                      {getPlacementText(p.placement)}: {p.name} (number:{" "}
-                      {p.number})
+                      {getPlacementText(p.placement)}: {p.name} (number: {p.number})
                     </p>
                   ))}
                 </div>
@@ -509,33 +525,46 @@ export default function Game() {
                   </h3>
                   {gameOverInfo.placements.map((p, index) => (
                     <p key={index} className="mb-1 text-black font-bold">
-                      {getPlacementText(p.placement)}: {p.name} (number:{" "}
-                      {p.number})
+                      {getPlacementText(p.placement)}: {p.name} (number: {p.number})
                     </p>
                   ))}
                 </div>
               </div>
             )
           )}
-          <button
-            onClick={handlePlayAgain}
-            className="bg-blue-700 text-white px-4 py-2 rounded hover:bg-blue-900 font-bold border-2 border-gray-800"
-          >
-            Play Again
-          </button>
+          <div className="flex flex-col gap-2 mt-4">
+            <button
+              onClick={handlePlayAgain}
+              className="bg-blue-700 text-white px-4 py-2 rounded hover:bg-blue-900 font-bold border-2 border-gray-800"
+            >
+              Play Again
+            </button>
+            <button
+              onClick={handleMainMenu}
+              className="bg-gray-300 text-black px-4 py-2 rounded hover:bg-gray-400 font-bold border-2 border-gray-800"
+            >
+              Main Menu
+            </button>
+          </div>
         </div>
       </div>
     );
   }
 
   if (!gameState.gameStarted) {
+    const me = gameState.players.find(p => p.id === mySocketId);
     return (
       <div className="min-h-screen flex items-center justify-center bg-gray-100">
         <div className="bg-white p-8 rounded-lg shadow-lg border-2 border-gray-800">
+          {error && (
+            <div className="mb-4 p-2 bg-red-100 text-red-700 border-2 border-red-700 rounded font-bold text-center">
+              {error}
+            </div>
+          )}
           {lobbyCode && (
             <div className="mb-4 text-center">
               <span className="text-black font-bold">
-                Lobby Code:{" "}
+                Lobby Code: {" "}
                 <span className="text-2xl tracking-widest">{lobbyCode}</span>
               </span>
             </div>
@@ -562,13 +591,9 @@ export default function Game() {
               </li>
             ))}
           </ul>
-          {error && (
-            <div className="mb-4 p-2 bg-red-100 text-red-700 border-2 border-red-700 rounded font-bold">
-              {error}
-            </div>
-          )}
+          {/* Start Game button for party leader */}
           {gameState.players.length > 1 &&
-            gameState.players[0]?.name === playerName && (
+            gameState.players[0]?.id === mySocketId && (
               <button
                 className={`bg-blue-700 text-white font-bold py-2 px-4 rounded border-2 border-gray-800 w-full mb-4 ${
                   gameState.players.every((p) => p.selectedNumber !== null)
@@ -576,9 +601,7 @@ export default function Game() {
                     : "opacity-50 cursor-not-allowed"
                 }`}
                 onClick={() => {
-                  if (
-                    gameState.players.every((p) => p.selectedNumber !== null)
-                  ) {
+                  if (gameState.players.every((p) => p.selectedNumber !== null)) {
                     socketRef.current?.emit("startGame");
                   }
                 }}
@@ -590,7 +613,7 @@ export default function Game() {
               </button>
             )}
           {/* Number selection always available until game starts, or after duplicate error, or if selectedNumber is null */}
-          {(gameState.players.length === 0 && playerName) || gameState.players.find(p => p.name === playerName)?.selectedNumber === null ? (
+          {me && me.selectedNumber === null ? (
             <>
               <h2 className="text-2xl font-bold mb-4 text-black">
                 {error?.includes("same number") ? "Choose a Different Number" : "Select Your Number"}
@@ -621,7 +644,7 @@ export default function Game() {
                   Waiting for other players to select their number...
                 </h2>
                 <p className="text-black font-bold">
-                  Your number: {selectedNumber}
+                  Your number: {me?.selectedNumber ?? ''}
                 </p>
               </div>
             ) : null
@@ -634,6 +657,11 @@ export default function Game() {
   return (
     <div className="min-h-screen p-8 bg-gray-100">
       <div className="max-w-4xl mx-auto">
+        {error && (
+          <div className="mb-4 p-2 bg-red-100 text-red-700 border-2 border-red-700 rounded font-bold text-center">
+            {error}
+          </div>
+        )}
         {eliminationInfo && (
           <div className="bg-green-100 p-4 rounded-lg shadow-lg text-center mb-6 border-2 border-green-700">
             <p className="text-green-900 font-bold text-lg">
@@ -710,8 +738,8 @@ export default function Game() {
                     {player.name}
                   </span>
                   {player.isEliminated && (
-                    <span className="bg-red-200 text-red-900 text-sm font-bold px-3 py-1 rounded-full border border-red-700">
-                      OUT - {getPlacementText(player.placement || 0)} Place
+                    <span className="bg-green-200 text-green-900 text-sm font-bold px-3 py-1 rounded-full border border-green-700">
+                      Won - {getPlacementText(player.placement || 0)} Place
                       {player.selectedNumber !== null &&
                         ` (${player.selectedNumber})`}
                     </span>
@@ -731,12 +759,6 @@ export default function Game() {
             ))}
           </div>
         </div>
-
-        {error && (
-          <div className="mt-4 p-4 bg-red-200 text-red-900 rounded border-2 border-red-700 font-bold">
-            {error}
-          </div>
-        )}
       </div>
     </div>
   );
